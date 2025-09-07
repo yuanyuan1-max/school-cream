@@ -1,4 +1,6 @@
-# 使用官方Python运行时作为基础镜像
+# School Cream - 智能课堂监控系统 Docker镜像
+# 基于Python 3.8，支持GPU加速的深度学习环境
+
 FROM python:3.8-slim
 
 # 设置工作目录
@@ -8,6 +10,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
@@ -16,7 +19,6 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
-    libglib2.0-0 \
     libgtk-3-0 \
     libavcodec-dev \
     libavformat-dev \
@@ -32,15 +34,11 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     git \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装FFmpeg
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
-# 复制requirements文件
+# 复制requirements文件并安装Python依赖
 COPY requirements.txt .
-
-# 升级pip并安装Python依赖
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -51,17 +49,17 @@ COPY . .
 RUN mkdir -p /app/models /app/output /app/config /app/logs
 
 # 设置权限
-RUN chmod +x main.py
+RUN chmod +x main.py test_server.py
 
-# 暴露端口（如果需要Web服务）
-EXPOSE 8080
+# 暴露端口
+EXPOSE 8080 5000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import torch; import cv2; import mediapipe; print('Health check passed')" || exit 1
 
-# 默认命令
-CMD ["python", "main.py", "--registry_url", "http://localhost:8080/api/courses"]
+# 默认命令 - 启动主程序
+CMD ["python", "main.py", "--registry_url", "http://localhost:5000/api/courses"]
 
 # 多阶段构建版本（可选，用于减小镜像大小）
 # FROM python:3.8-slim as builder

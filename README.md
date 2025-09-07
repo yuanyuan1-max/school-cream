@@ -10,6 +10,7 @@
 - **姿态分析**：基于MediaPipe的人体姿态关键点提取
 - **异常行为检测**：使用LSTM自编码器检测手机使用行为
 - **多线程处理**：确保实时性和流畅性
+- **测试服务器**：内置模拟API服务器，便于开发和测试
 
 ## 📋 系统要求
 
@@ -41,9 +42,16 @@ pip install -r requirements.txt
 
 4. **下载模型文件**
 确保 `models/` 目录包含以下文件：
-- `best.pt` 或 `yolo11n.pt` - YOLO检测模型
+- `best.pt` - 自定义训练的最佳模型（支持举手、人员、躺卧检测）
+- `yolo11n.pt` - YOLO11n模型（仅支持人员检测）
+- `yolov12n.pt` - YOLOv12n模型
 - `phone_detection_autoencoder.pth` - 手机检测模型
 - `threshold.npy` - 检测阈值文件
+
+5. **启动测试服务器（可选）**
+```bash
+python test_server.py
+```
 
 ### Docker部署
 
@@ -82,7 +90,26 @@ python main.py --registry_url <API_URL> --max_frames <帧数限制>
 
 **示例：**
 ```bash
+# 使用测试服务器
+python main.py --registry_url "http://localhost:5000/api/courses" --max_frames 1000
+
+# 使用生产API
 python main.py --registry_url "http://api.example.com/courses" --max_frames 1000
+```
+
+### 测试服务器使用
+
+项目包含一个内置的测试服务器，用于模拟API响应：
+
+```bash
+# 启动测试服务器
+python test_server.py
+
+# 访问API文档
+curl http://localhost:5000/
+
+# 获取课程列表
+curl http://localhost:5000/api/courses
 ```
 
 ### API请求结构
@@ -202,13 +229,22 @@ DETECTION_CONFIG = {
 school_cream/
 ├── main.py                    # 主程序入口
 ├── config.py                  # 配置文件
+├── annotation_config.py       # 标注配置（检测标签、颜色、阈值）
+├── test_server.py             # 测试API服务器
 ├── models/                    # 模型文件目录
-│   ├── best.pt               # 最佳YOLO模型
+│   ├── best.pt               # 最佳YOLO模型（支持举手、人员、躺卧）
+│   ├── yolo11n.pt            # YOLO11n模型（仅人员检测）
+│   ├── yolov12n.pt           # YOLOv12n模型
 │   ├── phone_detection_autoencoder.pth    # 手机检测模型
 │   └── threshold.npy         # 检测阈值
+├── output/                    # 输出视频目录
 ├── requirements.txt           # Python依赖
 ├── Dockerfile                # Docker构建文件
 ├── docker-compose.yml        # Docker编排文件
+├── deploy.sh                 # 部署脚本
+├── nginx.conf                # Nginx配置
+├── prometheus.yml            # 监控配置
+├── env.example               # 环境变量示例
 └── README.md                 # 项目说明
 ```
 
@@ -281,6 +317,14 @@ CUDA_VISIBLE_DEVICES=0
    - 检查光照条件
 
 ## 📝 更新日志
+
+### v1.1.0 (当前版本)
+- ✅ 修复best.pt模型检测问题
+- ✅ 支持Person和Lie Down检测
+- ✅ 优化置信度阈值配置
+- ✅ 添加测试服务器支持
+- ✅ 清理项目结构，删除临时文件
+- ✅ 更新Docker配置和文档
 
 ### v1.0.0
 - 初始版本发布
