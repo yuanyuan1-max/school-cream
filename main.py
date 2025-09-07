@@ -15,6 +15,7 @@ import requests
 import json
 import argparse
 from config import get_model_path, get_data_path, check_model_exists, DETECTION_CONFIG
+from annotation_config import LABEL_CONFIG, ANNOTATION_STYLE, STATS_OVERLAY, get_label_color, get_label_min_confidence, is_label_enabled
 
 # ---------------- 手机检测相关类 ----------------
 class Autoencoder(nn.Module):
@@ -172,6 +173,9 @@ class VideoProcessor:
         self.output_filename = None
         self.is_recording = False
         
+        # 当前帧
+        self.current_frame = None
+        
         # 初始化模型
         self.init_model()
         
@@ -182,18 +186,29 @@ class VideoProcessor:
         """初始化YOLO模型"""
         try:
             torch.set_float32_matmul_precision('medium')
-            if check_model_exists('yolo_best'):
-                self.model = YOLO(get_model_path('yolo_best'))
-            elif check_model_exists('yolov12n'):
-                self.model = YOLO(get_model_path('yolov12n'))
+            
+            # 优先使用best.pt模型（支持四个标签检测）
+            if check_model_exists('best'):
+                self.model = YOLO(get_model_path('best'))
+                print("使用best.pt模型（支持Raise Hand、Person、Lie Down检测）")
             elif check_model_exists('yolo11n'):
                 self.model = YOLO(get_model_path('yolo11n'))
+                print("使用yolo11n.pt模型（仅支持Person检测）")
+            elif check_model_exists('yolov12n'):
+                self.model = YOLO(get_model_path('yolov12n'))
+                print("使用yolov12n.pt模型")
             else:
                 self.model = YOLO('yolo11n.pt')
+                print("使用默认yolo11n.pt模型")
+            
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
             self.model.to(device=device, dtype=dtype)
             print(f"Model loaded on {device}")
+            
+            # 显示模型信息
+            print(f"Model classes: {self.model.names}")
+            
         except Exception as e:
             print(f"Model loading failed: {e}")
     
@@ -265,48 +280,117 @@ class VideoProcessor:
         if not self.model or self.current_frame is None:
             return
         height, width = self.current_frame.shape[:2]
-        results = self.model(self.current_frame, conf=DETECTION_CONFIG['conf_threshold'], verbose=False, max_det=DETECTION_CONFIG['max_det'])
+        results = self.model(self.current_frame, conf=0.01, verbose=False, max_det=DETECTION_CONFIG['max_det'])
         counts = {'Person': 0, 'Raise Hand': 0, 'Lie Down': 0, 'Phone Usage': 0}
         annotated_frame = self.current_frame.copy()
+        
+        # 使用配置化的标签设置
+        class_config = {}
+        for label_name, config in LABEL_CONFIG.items():
+            if config.get('enabled', True) and config.get('class_id') is not None:
+                class_config[config['class_id']] = {
+                    'name': label_name,
+                    'color': config['color'],
+                    'min_conf': config['min_confidence'],
+                    'max_height_ratio': config.get('max_height_ratio', 1.0)
+                }
+        
         if results and results[0].boxes:
             for box in results[0].boxes:
                 cls = int(box.cls)
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 box_height = y2 - y1
                 confidence = float(box.conf)
-                class_names = ['Raise Hand', 'Person', 'Lie Down']
-                class_name = class_names[cls] if cls < len(class_names) else f'Class_{cls}'
-                color = {
-                    'Raise Hand': (0, 255, 0),
-                    'Person': (0, 100, 255),
-                    'Lie Down': (255, 0, 0),
-                    'Phone Usage': (255, 165, 0)
-                }.get(class_name, (128, 128, 128))
-                if cls == 0 and confidence >= 0.1:
-                    counts['Raise Hand'] += 1
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, f"{class_name}: {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                elif cls == 1 and box_height < height * 0.6:
-                    counts['Person'] += 1
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, f"{class_name}: {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                elif cls == 2 and confidence >= 0.1:
-                    counts['Lie Down'] += 1
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, f"{class_name}: {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                if cls == 1 and self.phone_detection_enabled and self.phone_autoencoder and self.skeleton_extractor:
-                    skeleton_data = self.skeleton_extractor.extract(self.current_frame, (x1, y1, x2, y2))
-                    if skeleton_data is not None:
-                        is_using_phone = detect_phone_usage(self.phone_autoencoder, skeleton_data, self.phone_threshold)
-                        if is_using_phone:
-                            counts['Phone Usage'] += 1
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 165, 0), 2)
-                            cv2.putText(annotated_frame, f"Phone Usage: {confidence:.2f}", (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)
+                
+                # 调试信息：显示所有检测到的对象
+                if confidence > 0.05:  # 显示置信度大于0.05的所有检测
+                    print(f"检测到: class={cls}, conf={confidence:.3f}, height={box_height}, max_height={height * 0.8}")
+                
+                # 检查是否满足检测条件
+                should_detect = False
+                if cls in class_config:
+                    config = class_config[cls]
+                    class_name = config['name']
+                    
+                    # 检查标签是否启用
+                    if not is_label_enabled(class_name):
+                        continue
+                    
+                    # 检查置信度
+                    if confidence < config['min_conf']:
+                        continue
+                    
+                    # 检查高度条件（仅对Person检测）
+                    if class_name == 'Person':
+                        max_height = height * config['max_height_ratio']
+                        if box_height >= max_height:
+                            continue
+                    
+                    should_detect = True
+                
+                if should_detect:
+                    # 标注基础检测
+                    config = class_config[cls]
+                    class_name = config['name']
+                    color = config['color']
+                    
+                    counts[class_name] += 1
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, ANNOTATION_STYLE['box_thickness'])
+                    cv2.putText(annotated_frame, f"{class_name}: {confidence:.2f}", 
+                               (x1, y1 - ANNOTATION_STYLE['text_offset']), 
+                               cv2.FONT_HERSHEY_SIMPLEX, ANNOTATION_STYLE['text_scale'], color, ANNOTATION_STYLE['text_thickness'])
+                    
+                    # 如果是Person检测，额外进行手机使用检测
+                    if cls == 1 and self.phone_detection_enabled and self.phone_autoencoder and self.skeleton_extractor:
+                        try:
+                            skeleton_data = self.skeleton_extractor.extract(self.current_frame, (x1, y1, x2, y2))
+                            if skeleton_data is not None:
+                                is_using_phone = detect_phone_usage(self.phone_autoencoder, skeleton_data, self.phone_threshold)
+                                if is_using_phone and is_label_enabled('Phone Usage'):
+                                    counts['Phone Usage'] += 1
+                                    # 在Person标注下方添加Phone Usage标注
+                                    phone_color = get_label_color('Phone Usage')
+                                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), phone_color, ANNOTATION_STYLE['phone_box_thickness'])
+                                    cv2.putText(annotated_frame, f"Phone Usage: {confidence:.2f}", 
+                                               (x1, y1 - ANNOTATION_STYLE['phone_text_offset']), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, ANNOTATION_STYLE['text_scale'], phone_color, ANNOTATION_STYLE['text_thickness'])
+                        except Exception as e:
+                            print(f"Phone detection error: {e}")
+        
+        # 在帧上添加统计信息
+        self.add_statistics_overlay(annotated_frame, counts)
+        
         self.detection_counts = counts
         self.last_update = time.time()
         if self.is_recording:
             self.save_frame(annotated_frame)
         print(f"Frame processed: {counts}")
+    
+    def add_statistics_overlay(self, frame, counts):
+        """在帧上添加统计信息覆盖层"""
+        if not STATS_OVERLAY['enabled']:
+            return
+            
+        height, width = frame.shape[:2]
+        x, y = STATS_OVERLAY['position']
+        w, h = STATS_OVERLAY['size']
+        
+        # 创建半透明背景
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, STATS_OVERLAY['background_alpha'], frame, 1 - STATS_OVERLAY['background_alpha'], 0, frame)
+        
+        # 添加统计文本
+        y_offset = y + 30
+        cv2.putText(frame, "Detection Statistics:", (x + 10, y_offset), 
+                   cv2.FONT_HERSHEY_SIMPLEX, STATS_OVERLAY['title_scale'], STATS_OVERLAY['text_color'], 2)
+        
+        for label, count in counts.items():
+            if is_label_enabled(label):
+                y_offset += STATS_OVERLAY['line_spacing']
+                color = get_label_color(label)
+                cv2.putText(frame, f"{label}: {count}", (x + 10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, STATS_OVERLAY['stats_scale'], color, 2)
     
     def start_recording(self, output_filename, width, height, fps):
         os.makedirs(os.path.dirname(output_filename) if os.path.dirname(output_filename) else '.', exist_ok=True)
