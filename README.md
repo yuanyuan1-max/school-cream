@@ -24,7 +24,7 @@
 
 1. **克隆项目**
 ```bash
-git clone <repository-url>
+git clone https://github.com/yuanyuan1-max/school-cream/tree/main
 cd school_cream
 ```
 
@@ -299,3 +299,4 @@ CUDA_VISIBLE_DEVICES=0
 ## 📞 联系方式
 
 如有问题或建议，请联系开发团队。
+
